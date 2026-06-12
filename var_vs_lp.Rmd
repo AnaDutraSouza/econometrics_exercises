@@ -1,0 +1,111 @@
+---
+title: "VAR vs Local Projections: a simple comparison with Brazilian data"
+author: "Ana Dutra
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Here I use two methods — VAR (Vector Autoregression) and LPs (Local Projections) — to compare the results of this simple analysis.
+
+First, we need to understand what a VAR is:
+- It is a system of equations where each variable depends on its own lags and the lags of the others.
+- There is no economic theory behind it yet: it only captures the raw dynamics of the data.
+- We can apply Cholesky decomposition to identify structural shocks.
+
+And we also need to understand Local Projections:
+- With LPs we obtain impulse responses directly, unlike VARs where we first estimate the model and then derive the responses.
+- We can estimate the impulse response for each horizon \(h\) separately.
+- The shocks can come from an identified VAR or from an external instrument.
+- LPs are more robust to specification errors and more flexible.
+
+## Installing packages
+
+```{r packages, eval=FALSE}
+install.packages(c("rbcb", "vars", "lpirfs", "dplyr", "tidyr", "purrr", "ggplot2"))
+```
+
+## Getting the data
+
+```{r data}
+library(rbcb)
+library(tidyr)
+library(dplyr)
+library(purrr)
+
+ibcbr <- get_series(24364, start_date = "2003-01-01")
+ipca  <- get_series(433,   start_date = "2003-01-01")
+selic <- get_series(4189,  start_date = "2003-01-01")
+
+dados <- reduce(list(ibcbr, ipca, selic), full_join, by = "date") |>
+  rename(pib = "24364", infla = "433", juros = "4189") |>
+  drop_na()
+```
+
+The Selic rate is expressed in annual terms (% p.a.). The ideal procedure would be to convert it to an effective monthly rate (divide by 100 and then compute \((1+\text{rate})^{1/12} - 1\)), but for this simple exercise we keep the annualized rate because we are interested only in the direction of the shock.
+
+## Transformations to guarantee stationarity
+
+```{r transform}
+dados <- dados |>
+  mutate(
+    ln_pib =log(pib),
+    d_infla =infla,        # IPCA is already a monthly change
+    juros_nivel =juros        # level (annualised)
+  )
+```
+
+## Estimate the VAR in reduced form
+
+```{r var}
+library(vars)
+
+data_var <- dados |>
+  dplyr::select(ln_pib, d_infla, juros_nivel) |>
+  na.omit()
+
+# Choose the lag length by information criteria
+lag_selection <- VARselect(data_var, lag.max = 13, type = "const")
+lag_selection$selection
+
+p <- 3  # chosen lag order
+
+var_model <- VAR(data_var, p = p, type = "const")
+summary(var_model)
+```
+
+## Impulse-response function via Cholesky
+
+### (Order: PIB → Inflation → Interest rate)
+
+```{r irf_var}
+# Order: 1 = PIB, 2 = Inflation, 3 = Interest rate (the last receives the monetary policy shock)
+irf_var <- irf(var_model, impulse = "juros_nivel", response = c("ln_pib", "d_infla"),
+               n.ahead = 24, ortho = TRUE, cumulative = FALSE, boot = TRUE)
+
+plot(irf_var)
+```
+
+The "price puzzle" appears — inflation rises before it falls, a known problem that Cholesky identification often does not solve.
+
+## Local Projections (Jordà approach)
+
+We use the VAR residuals as a "monetary policy shock" (identified by Cholesky). This is just to compare the two methodologies using the same shock, though it is not the ideal procedure.
+
+```{r lp}
+library(lpirfs)
+
+resultados_lp <- lp_lin(data_var,
+                        lags_endog_lin = p,
+                        trend = 0,
+                        shock_type = 1,
+                        confint = 1.96,
+                        hor = 24)
+
+plot(resultados_lp)
+```
+
+For the interest rate, the confidence bands are wider. LPs are more robust but less efficient.
