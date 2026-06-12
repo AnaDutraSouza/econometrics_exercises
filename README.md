@@ -1,2 +1,2 @@
 # econometrics_exercises
-Some simple econometrics implementation for training
+Hands-on econometrics exercises across macro and micro. A PhD student’s training repository in applied economics.
